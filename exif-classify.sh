@@ -114,8 +114,9 @@ classify_filename() {
     fi
 
     # --- Camera prefix patterns ---
-    # DSC: DSC followed by digits and optional trailing letter (e.g. DSC00273, DSC00273a)
-    if [[ "$base_upper" =~ ^DSC[0-9]+[A-Z]?$ ]]; then
+    # DSC: DSC followed by optional letter (e.g. DSCF for Fujifilm), then digits, optional trailing letter
+    # Covers: DSC00273, DSC00273a, DSCF0001, DSCF0001a
+    if [[ "$base_upper" =~ ^DSC[A-Z]?[0-9]+[A-Z]?$ ]]; then
         echo "CAMERA-PREFIX [prefix:DSC]"
         return
     fi
@@ -172,9 +173,9 @@ classify_filename() {
         return
     fi
 
-    # NNNN+ — plain sequential numbers, 4 or more digits, no letters (e.g. 7780, 7799)
-    if [[ "$base" =~ ^[0-9]{4,}$ ]]; then
-        echo "CAMERA-SERIAL [pattern:NNNN]"
+    # NNN+ — plain sequential numbers, 3 or more digits, no letters (e.g. 013, 047, 7780, 7799)
+    if [[ "$base" =~ ^[0-9]{3,}$ ]]; then
+        echo "CAMERA-SERIAL [pattern:NNN]"
         return
     fi
 
