@@ -14,14 +14,11 @@ predate smartphones, were scanned from film, or passed through various software
 over the years frequently lack one or both fields. These tools identify and
 fill those gaps without altering files that already have correct metadata.
 
-The collection targeted by these tools is ~120GB of photos on a media server,
-spanning decades of camera formats, film scans, and phone photos.
-
 ---
 
 ## Directory Structure Assumption
 
-Both tools expect photos to live under a `YYYY/MM` hierarchy:
+Currently both tools expect photos to live under a `YYYY/MM` hierarchy:
 
 ```
 /path/to/pictures/
@@ -56,7 +53,7 @@ sudo apt install libimage-exiftool-perl
 
 ### exif-classify.sh
 
-Classifies every photo filename in the tree into one of four categories.
+This is an analysis tool used to help identify the types of issues which need to be addressed before using exif-photos.sh.  It classifies every photo filename in the tree into one of four categories.
 **Read-only — no files are modified.**
 
 Used to validate that the filename pattern logic correctly identifies
@@ -69,24 +66,24 @@ camera-generated names before running the update pass.
 
 **Categories:**
 
-| Category | Description | Examples |
-|---|---|---|
-| `DATE-LIKE` | Filename contains a recognizable date/timestamp | `20141008_135239.jpg`, `2013-09-04 12.09.33.jpg` |
-| `CAMERA-PREFIX` | Starts with a known camera-generated prefix | `IMG_0042.jpg`, `DSC00273.jpg`, `DSCF0001.jpg` |
-| `CAMERA-SERIAL` | Matches a camera/scanner sequential numbering pattern | `100_0626.jpg`, `009_6A.jpg`, `013.jpg` |
-| `DESCRIPTIVE` | None of the above — assumed to be a human-given name | `beach sunset.jpg`, `graduation.jpg` |
+| Category        | Description                                           | Examples                                         |
+| --------------- | ----------------------------------------------------- | ------------------------------------------------ |
+| `DATE-LIKE`     | Filename contains a recognizable date/timestamp       | `20141008_135239.jpg`, `2013-09-04 12.09.33.jpg` |
+| `CAMERA-PREFIX` | Starts with a known camera-generated prefix           | `IMG_0042.jpg`, `DSC00273.jpg`, `DSCF0001.jpg`   |
+| `CAMERA-SERIAL` | Matches a camera/scanner sequential numbering pattern | `100_0626.jpg`, `009_6A.jpg`, `013.jpg`          |
+| `DESCRIPTIVE`   | None of the above — assumed to be a human-given name  | `beach sunset.jpg`, `graduation.jpg`             |
 
 The `DESCRIPTIVE` category is the catch-all. Review its output to identify any
 camera-generated names that slipped through before proceeding to the update step.
 
 **Date patterns recognized:**
 
-| Pattern | Example |
-|---|---|
-| `YYYY-MM-DD HH.MM.SS` | `2013-09-04 12.09.33` |
-| `YYYYMMDD_HHMMSS` | `20141008_135239` |
-| `YYYYMMDD` | `IMG_20141008` |
-| `MMDDYY` | six-digit date fragment |
+| Pattern               | Example                 |
+| --------------------- | ----------------------- |
+| `YYYY-MM-DD HH.MM.SS` | `2013-09-04 12.09.33`   |
+| `YYYYMMDD_HHMMSS`     | `20141008_135239`       |
+| `YYYYMMDD`            | `IMG_20141008`          |
+| `MMDDYY`              | six-digit date fragment |
 
 **Camera prefix patterns recognized:**
 
@@ -113,7 +110,7 @@ Audits or updates `DateTimeOriginal`, `CreateDate`, `ImageDescription`, and
 
 **Modes:**
 
-`report` — lists files missing fields; no changes made.  
+`report` — lists files missing fields; no changes made.
 `update` — writes missing fields; uses `-overwrite_original` (no exiftool backup copy).
 
 #### DateTimeOriginal / CreateDate
