@@ -1,17 +1,25 @@
 #!/bin/bash
-# exif_photos.sh
+# exif-photos.sh
 #
-# Audits or updates EXIF DateTimeOriginal for photos in a YYYY/MM directory structure.
+# Audits or updates EXIF fields for photos in a YYYY/MM directory structure.
+# Processes files missing DateTimeOriginal OR missing Description.
 #
 # Usage:
-#   exif_photos.sh report <base_dir> [logfile]
-#   exif_photos.sh update <base_dir> [logfile]
+#   exif-photos.sh report <base_dir> [logfile]
+#   exif-photos.sh update <base_dir> [logfile]
 #
 # Modes:
-#   report  -- List files missing DateTimeOriginal; no changes made
-#   update  -- Set DateTimeOriginal on files missing it, using:
-#              1. Timestamp parsed from filename (YYYYMMDD_HHMMSS or YYYYMMDD)
-#              2. YYYY/MM from directory path, defaulting to 01 00:00:00
+#   report  -- List files missing DateTimeOriginal or Description; no changes made
+#   update  -- Set missing fields using rules below:
+#
+# DateTimeOriginal (and CreateDate) derived from, in order:
+#   1. Timestamp parsed from filename (YYYYMMDD_HHMMSS, YYYYMMDD, MMDDYYHHMMSS)
+#   2. YYYY/MM from directory path, defaulting to 01 00:00:00
+#
+# Description (ImageDescription + XMP-dc:Description) derived from:
+#   1. Descriptive subdirectory beneath YYYY/MM (if present)
+#   2. Descriptive filename (if not a camera-generated name)
+#   3. Both combined as "SubDir - Filename" when both are present
 #
 # Supported file types: jpg, jpeg, png, tif
 # Skipped: videos, gif, non-media files, directories outside YYYY/MM pattern
@@ -63,6 +71,8 @@ count_updated_dir=0
 count_skipped_structure=0
 count_skipped_type=0
 count_errors=0
+count_desc_written=0
+count_desc_skipped=0
 
 # ---------------------------------------------------------------------------
 # Check exiftool is available
@@ -94,7 +104,7 @@ is_photo() {
 
 # ---------------------------------------------------------------------------
 # Helper: extract DateTimeOriginal via exiftool
-# Returns empty string if not present or not a valid date
+# Returns empty string if not present
 # ---------------------------------------------------------------------------
 get_exif_date() {
     local file="$1"
@@ -102,8 +112,26 @@ get_exif_date() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: extract existing Description via exiftool
+# Checks ImageDescription first, then XMP-dc:Description (mirrors Immich priority)
+# Returns empty string if neither is present
+# ---------------------------------------------------------------------------
+get_exif_desc() {
+    local file="$1"
+    local val
+    val=$(exiftool -s3 -ImageDescription "$file" 2>/dev/null || true)
+    if [[ -z "$val" ]]; then
+        val=$(exiftool -s3 -XMP-dc:Description "$file" 2>/dev/null || true)
+    fi
+    echo "$val"
+}
+
+# ---------------------------------------------------------------------------
 # Helper: attempt to parse date from filename
-# Matches: YYYYMMDD_HHMMSS  or  YYYYMMDD
+# Patterns tried in order (most specific first):
+#   1. YYYYMMDD_HHMMSS  (e.g. 20141008_135239, anywhere in name)
+#   2. YYYYMMDD         (e.g. IMG_20141008, anywhere in name)
+#   3. MMDDYYHHMMSS     (e.g. 0304011035, 0304011035a — phone format, whole name)
 # Returns exiftool-format date string: YYYY:MM:DD HH:MM:SS  or empty
 # ---------------------------------------------------------------------------
 parse_date_from_filename() {
@@ -124,11 +152,28 @@ parse_date_from_filename() {
         return
     fi
 
-    # Pattern 2: YYYYMMDD anywhere in filename (e.g. IMG_20141008.jpg)
-    if [[ "$base" =~ ([0-9]{4})([0-9]{2})([0-9]{2}) ]]; then
-        local y="${BASH_REMATCH[1]}"
-        local mo="${BASH_REMATCH[2]}"
-        local d="${BASH_REMATCH[3]}"
+    # Pattern 2: MMDDYYHHMM — exactly 10 digits, optional trailing letter(s)
+    # Must be checked before YYYYMMDD since both match 8+ digit strings
+    # e.g. 0304011035a (MM=03 DD=04 YY=01 HH=10 MM=35), 1027121015b
+    # Note: no seconds field in this format; SS defaults to 00
+    local pat_mmddyyhhmm='^(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})([01][0-9]|2[0-3])([0-5][0-9])[A-Za-z]*$'
+    if [[ "$base" =~ $pat_mmddyyhhmm ]]; then
+        local mo="${BASH_REMATCH[1]}"
+        local d="${BASH_REMATCH[2]}"
+        local y="20${BASH_REMATCH[3]}"
+        local h="${BASH_REMATCH[4]}"
+        local mi="${BASH_REMATCH[5]}"
+        echo "${y}:${mo}:${d} ${h}:${mi}:00"
+        return
+    fi
+
+    # Pattern 3: YYYYMMDD anywhere in filename (e.g. IMG_20141008)
+    # Anchored so it does not match inside a longer unbroken digit sequence
+    local pat_yyyymmdd='(^|[^0-9])([0-9]{4})([0-9]{2})([0-9]{2})([^0-9]|$)'
+    if [[ "$base" =~ $pat_yyyymmdd ]]; then
+        local y="${BASH_REMATCH[2]}"
+        local mo="${BASH_REMATCH[3]}"
+        local d="${BASH_REMATCH[4]}"
         echo "${y}:${mo}:${d} 00:00:00"
         return
     fi
@@ -167,6 +212,102 @@ is_valid_year_month() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: determine if a name (filename base or directory name) is descriptive
+# Returns 0 (true) if descriptive, 1 if camera-generated
+# Uses same logic as exif-classify.sh
+# ---------------------------------------------------------------------------
+is_descriptive() {
+    local name="${1,,}"  # lowercase for prefix checks
+    local name_orig="$1"
+    local name_upper="${1^^}"
+
+    # Date-like patterns — not descriptive
+    local pat_datetime='^[0-9]{4}-[0-9]{2}-[0-9]{2}[_ ][0-9]{2}\.[0-9]{2}\.[0-9]{2}'
+    [[ "$name_orig" =~ $pat_datetime ]] && return 1
+    local pat_yyyymmdd_hhmmss='[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])_([01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]'
+    [[ "$name_orig" =~ $pat_yyyymmdd_hhmmss ]] && return 1
+    local pat_yyyymmdd='(1[89][0-9]{2}|20[0-9]{2}|21[0]{2})(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])'
+    [[ "$name_orig" =~ $pat_yyyymmdd ]] && return 1
+    local pat_mmddyyhhmm='^(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])([0-9]{2})([01][0-9]|2[0-3])([0-5][0-9])[A-Za-z]*$'
+    [[ "$name_orig" =~ $pat_mmddyyhhmm ]] && return 1
+
+    # Camera prefixes — not descriptive
+    [[ "$name_upper" =~ ^DSC[A-Z]?[0-9]+[A-Z]?$ ]] && return 1
+    [[ "$name_upper" =~ ^SAM_[0-9]+ ]] && return 1
+    [[ "$name" =~ ^downsized ]] && return 1
+    [[ "$name" =~ ^attach[0-9]+ ]] && return 1
+    for prefix in "IMG_" "DSCN" "MVI_" "VID_" "MOV_" "P[0-9]"; do
+        [[ "$name_upper" =~ ^$prefix ]] && return 1
+    done
+
+    # Camera serial patterns — not descriptive
+    [[ "$name_orig" =~ ^[0-9]{3}_[0-9]{4}(_[A-Za-z])?$ ]] && return 1
+    [[ "$name_orig" =~ ^[0-9]+_[0-9]+[A-Za-z]?$ ]] && return 1
+    [[ "$name" =~ ^[0-9]?img[0-9]+$ ]] && return 1
+    [[ "$name_orig" =~ ^[0-9]{4}[A-Za-z][A-Za-z0-9]*$ ]] && return 1
+    [[ "$name_orig" =~ ^[0-9]{3,}$ ]] && return 1
+
+    # Anything remaining is descriptive
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Helper: derive description string from file path
+# Combines descriptive subdirectory (beneath YYYY/MM) and/or descriptive filename
+# Returns empty string if neither component is descriptive
+# ---------------------------------------------------------------------------
+derive_description() {
+    local filepath="$1"
+    local base_dir="$2"
+
+    local rel_path="${filepath#$base_dir/}"
+    # rel_path is now: YYYY/MM[/subdir[/subdir...]]/filename.ext
+
+    # Strip YYYY/MM prefix
+    local after_ym="${rel_path#*/*/}"
+    # after_ym is now: [subdir[/subdir...]/]filename.ext
+
+    # Separate the filename from any subdirectory path
+    local subdir_path=""
+    local filename
+    filename=$(basename "$after_ym")
+    local filename_base="${filename%.*}"
+
+    if [[ "$after_ym" == */* ]]; then
+        subdir_path="${after_ym%/*}"  # everything before the last /
+    fi
+
+    # Use only the immediate first subdirectory level as the descriptive label
+    # e.g. "Teachers 50-miler Day1/Camp at Marion Lake" -> label is "Teachers 50-miler Day1"
+    local subdir_label=""
+    if [[ -n "$subdir_path" ]]; then
+        subdir_label="${subdir_path%%/*}"  # first path component only
+    fi
+
+    local desc_subdir=""
+    local desc_filename=""
+
+    if [[ -n "$subdir_label" ]] && is_descriptive "$subdir_label"; then
+        desc_subdir="$subdir_label"
+    fi
+
+    if is_descriptive "$filename_base"; then
+        desc_filename="$filename_base"
+    fi
+
+    # Combine
+    if [[ -n "$desc_subdir" && -n "$desc_filename" ]]; then
+        echo "${desc_subdir} - ${desc_filename}"
+    elif [[ -n "$desc_subdir" ]]; then
+        echo "$desc_subdir"
+    elif [[ -n "$desc_filename" ]]; then
+        echo "$desc_filename"
+    else
+        echo ""
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Main loop: walk only YYYY/MM subdirectories of BASE_DIR
 # ---------------------------------------------------------------------------
 while IFS= read -r -d '' file; do
@@ -190,61 +331,102 @@ while IFS= read -r -d '' file; do
 
     (( count_processed++ )) || true
 
-    # Check for existing DateTimeOriginal
+    # -----------------------------------------------------------------------
+    # DateTimeOriginal
+    # -----------------------------------------------------------------------
     existing_date=$(get_exif_date "$file")
+    needs_date=false
+    new_date=""
+    date_source=""
 
-    if [[ -n "$existing_date" ]]; then
+    if [[ -z "$existing_date" ]]; then
+        (( count_missing++ )) || true
+        needs_date=true
+
+        if [[ "$MODE" == "report" ]]; then
+            log "MISSING [date] $file"
+        else
+            # Try filename first, fall back to directory
+            new_date=$(parse_date_from_filename "$file")
+            if [[ -n "$new_date" ]]; then
+                date_source="filename"
+            else
+                new_date=$(parse_date_from_dir "$file")
+                if [[ -n "$new_date" ]]; then
+                    date_source="directory"
+                fi
+            fi
+
+            if [[ -z "$new_date" ]]; then
+                log "ERROR [no date source] $file"
+                (( count_errors++ )) || true
+                continue
+            fi
+        fi
+    fi
+
+    # -----------------------------------------------------------------------
+    # Description
+    # -----------------------------------------------------------------------
+    existing_desc=$(get_exif_desc "$file")
+    needs_desc=false
+    new_desc=""
+
+    if [[ -z "$existing_desc" ]]; then
+        new_desc=$(derive_description "$file" "$BASE_DIR")
+        if [[ -n "$new_desc" ]]; then
+            needs_desc=true
+            if [[ "$MODE" == "report" ]]; then
+                log "MISSING [desc] $file  =>  $new_desc"
+            fi
+        fi
+    fi
+
+    # -----------------------------------------------------------------------
+    # Nothing to do for this file
+    # -----------------------------------------------------------------------
+    if ! $needs_date && ! $needs_desc; then
         (( count_has_date++ )) || true
         continue
     fi
 
-    # --- File is missing DateTimeOriginal ---
-    (( count_missing++ )) || true
+    [[ "$MODE" == "report" ]] && continue
 
-    if [[ "$MODE" == "report" ]]; then
-        log "MISSING $file"
-        continue
-    fi
-
-    # --- Update mode: determine best date source ---
-    new_date=""
-    date_source=""
-
-    # Try filename first
-    new_date=$(parse_date_from_filename "$file")
-    if [[ -n "$new_date" ]]; then
-        date_source="filename"
-    else
-        # Fall back to directory
-        new_date=$(parse_date_from_dir "$file")
-        if [[ -n "$new_date" ]]; then
-            date_source="directory"
-        fi
-    fi
-
-    if [[ -z "$new_date" ]]; then
-        log "ERROR [no date source] $file"
-        (( count_errors++ )) || true
-        continue
-    fi
-
-    # Preserve mtime before exiftool modifies the file
+    # -----------------------------------------------------------------------
+    # Update mode: write whatever is needed in a single exiftool call
+    # -----------------------------------------------------------------------
     mtime=$(stat -c '%y' "$file")
 
-    # Write DateTimeOriginal (and CreateDate for broader compatibility)
-    if exiftool -overwrite_original \
-        -DateTimeOriginal="$new_date" \
-        -CreateDate="$new_date" \
-        "$file" &>/dev/null; then
+    exiftool_args=( -overwrite_original )
 
-        # Restore mtime
+    if $needs_date; then
+        exiftool_args+=(
+            -DateTimeOriginal="$new_date"
+            -CreateDate="$new_date"
+        )
+    fi
+
+    if $needs_desc; then
+        exiftool_args+=(
+            -ImageDescription="$new_desc"
+            -XMP-dc:Description="$new_desc"
+        )
+    fi
+
+    if exiftool "${exiftool_args[@]}" "$file" &>/dev/null; then
         touch -d "$mtime" "$file"
 
-        log "UPDATED [$date_source] $new_date  $file"
-        if [[ "$date_source" == "filename" ]]; then
-            (( count_updated_filename++ )) || true
-        else
-            (( count_updated_dir++ )) || true
+        if $needs_date; then
+            log "UPDATED [date:$date_source] $new_date  $file"
+            if [[ "$date_source" == "filename" ]]; then
+                (( count_updated_filename++ )) || true
+            else
+                (( count_updated_dir++ )) || true
+            fi
+        fi
+        if $needs_desc; then
+            log "UPDATED [desc] \"$new_desc\"  $file"
+            (( count_desc_written++ )) || true
         fi
     else
         log "ERROR [exiftool write failed] $file"
@@ -261,12 +443,13 @@ log "========================================"
 log "Summary"
 log "========================================"
 log "Files processed (photo types in YYYY/MM) : $count_processed"
-log "Already had DateTimeOriginal             : $count_has_date"
+log "Already complete (date + desc present)   : $count_has_date"
 log "Missing DateTimeOriginal                 : $count_missing"
 if [[ "$MODE" == "update" ]]; then
 log "  Updated from filename                  : $count_updated_filename"
 log "  Updated from directory                 : $count_updated_dir"
-log "  Errors (could not determine date)      : $count_errors"
+log "Description written                      : $count_desc_written"
+log "Errors                                   : $count_errors"
 fi
 log "Skipped (outside YYYY/MM structure)      : $count_skipped_structure"
 log "Skipped (unsupported file type)          : $count_skipped_type"
