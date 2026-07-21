@@ -97,5 +97,33 @@ were explicitly deferred/out of scope.
 ## Open thread
 
 The same classify → report → update process needs to be run against bard's
-staged content — this is the next actual task for the project, not yet
-started as of this writing.
+staged content — this is the next actual task for the project.
+
+### Known gap: descriptive folders directly under `YYYY` (no `MM` level)
+
+Both tools only recognize `YYYY/MM/...`; anything else counts as "skipped
+(outside YYYY/MM)" and is left completely untouched — it won't even surface
+in `exif-classify.sh` output. A `tree -d` of `bard`'s staged content
+(`rod@boss:~/tmp/staging/bard`, also saved locally as `data/tree-bard.txt`)
+shows this is far more common there than in the Google Photos set:
+
+- `1986`, `1988`, `2020` have **no `MM` level at all** — files/folders sit
+  directly under the year.
+- `2013`, `2014`, `2016`, `2017`, `2018`, `2019`, `2021` have `MM` folders
+  **and** sibling descriptive event folders directly under `YYYY` (e.g.
+  `2013/Vacation/`, `2014/DC Trip/`, `2017/OAT2017/`). 2017 in particular is
+  almost entirely non-MM content.
+
+This is a bigger version of the pre-2000 flat-`YYYY` case seen in the Google
+Photos migration, which was resolved there by manually reorganizing into
+`YYYY/MM`. For `bard`, two options were identified and are undecided:
+
+1. Manually reorganize each of these into `YYYY/MM/EventName/` based on the
+   actual event date (same approach as before), or
+2. Extend the tools to also recognize `YYYY/DescriptiveName/...` (no `MM`
+   level), deriving date from the year alone (`YYYY:01:01`) or requiring
+   filename/manual resolution.
+
+No decision made yet — needs to be resolved before running
+`exif-classify.sh` against `bard`, since as-is the run would silently skip
+this content rather than flag it.
