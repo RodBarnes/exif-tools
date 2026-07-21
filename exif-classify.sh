@@ -71,7 +71,7 @@ is_photo() {
 #   DATE-LIKE [pattern:YYYYMMDD_HHMMSS]
 #   DATE-LIKE [pattern:YYYYMMDD]
 #   DATE-LIKE [pattern:MMDDYY]
-#   CAMERA-PREFIX [prefix:DSC|SAM_|downsized|Attach|IMG_|DSCN|MVI_|VID_|MOV_|P[0-9]]
+#   CAMERA-PREFIX [prefix:DSC|SAM_|downsized|Attach|IMG_|IMAG|DSCN|MVI_|VID_|MOV_|P[0-9]]
 #   CAMERA-SERIAL [pattern:NNN_NNNN|NNN_NNA|imgNN|NNNNAsuffix|NNNN]
 #   DESCRIPTIVE
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ classify_filename() {
         echo "CAMERA-PREFIX [prefix:Attach]"
         return
     fi
-    for prefix in "IMG_" "DSCN" "MVI_" "VID_" "MOV_" "P[0-9]"; do
+    for prefix in "IMG_" "IMAG" "DSCN" "MVI_" "VID_" "MOV_" "P[0-9]"; do
         if [[ "$base_upper" =~ ^$prefix ]]; then
             echo "CAMERA-PREFIX [prefix:${prefix}]"
             return

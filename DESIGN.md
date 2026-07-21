@@ -94,10 +94,32 @@ Skipped (unsupported file type)         : 807
 to fit the tools' directory assumption. `Family/` and `USB/` flat collections
 were explicitly deferred/out of scope.
 
+## Batch processing pattern
+
+The tools don't support scoping directly to a single year or month —
+`BASE_DIR` must be a directory whose *contents* are `YYYY/MM/...`
+(scoping to `BASE_DIR/YYYY` breaks the structural match, since the
+relative path from there is only `MM/...`). To process `bard`'s content in
+sets, the working pattern is: move whichever `YYYY/MM` directories are
+confirmed ready into a `staging/bard/ready/` subfolder, then run
+classify → report → backup → update against that subfolder only. Repeat
+per batch. This also sidesteps the non-`YYYY/MM` gap below on a
+batch-by-batch basis — only years already in valid `YYYY/MM` form get
+moved into `ready/`.
+
+**Gotcha:** `BASE_DIR` must not have a trailing slash. A trailing slash
+(e.g. `staging/bard/ready/` instead of `staging/bard/ready`) breaks the
+relative-path stripping (`${file#$BASE_DIR/}`), causing every file to
+silently fall into "skipped (structure)" with no error. Not considered
+worth fixing in the tools — just avoid trailing slashes when invoking
+them.
+
 ## Open thread
 
 The same classify → report → update process needs to be run against bard's
-staged content — this is the next actual task for the project.
+staged content — this is the next actual task for the project. The first
+batch (10 pre-2000 years, 19 files) has been completed via the batch
+pattern above; remaining batches are ongoing.
 
 ### Known gap: descriptive folders directly under `YYYY` (no `MM` level)
 

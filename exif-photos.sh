@@ -236,7 +236,7 @@ is_descriptive() {
     [[ "$name_upper" =~ ^SAM_[0-9]+ ]] && return 1
     [[ "$name" =~ ^downsized ]] && return 1
     [[ "$name" =~ ^attach[0-9]+ ]] && return 1
-    for prefix in "IMG_" "DSCN" "MVI_" "VID_" "MOV_" "P[0-9]"; do
+    for prefix in "IMG_" "IMAG" "DSCN" "MVI_" "VID_" "MOV_" "P[0-9]"; do
         [[ "$name_upper" =~ ^$prefix ]] && return 1
     done
 
