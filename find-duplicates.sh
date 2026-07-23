@@ -89,6 +89,7 @@ while IFS= read -r -d '' file; do
     file_sum=""
     match_found=false
     dup_found=false
+    last_match=""
 
     while IFS= read -r -d '' match; do
         # Skip comparing the file to itself (inode comparison, robust
@@ -96,6 +97,7 @@ while IFS= read -r -d '' file; do
         [[ "$match" -ef "$file" ]] && continue
 
         match_found=true
+        last_match="$match"
         if [[ -z "$file_sum" ]]; then
             file_sum=$(sha256sum "$file" | cut -d' ' -f1)
         fi
@@ -122,7 +124,7 @@ while IFS= read -r -d '' file; do
 
     if ! $dup_found; then
         if $match_found; then
-            log "NAME COLLISION  $file  (same name found elsewhere, content differs)"
+            log "NAME COLLISION  $file  (Conflict: $last_match)"
             (( count_collision++ )) || true
         else
             log "UNIQUE  $file"
