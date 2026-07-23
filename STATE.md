@@ -32,13 +32,6 @@ _Last updated: 2026-07-21_
 - Git: `DESIGN.md` has been committed (`4dcb041 Create DESIGN.md`, plus
   `3f5319d` state update). `data/` remains untracked.
 
-## What was last worked on
-
-Ran the full classify → report → update workflow against the first `bard`
-batch (`staging/bard/ready` on `boss`), consisting of 10 pre-2000 years
-that were moved into the `ready/` staging subfolder as being confirmed
-ready to process. Completed successfully with no errors.
-
 ## What's next
 
 1. Identify and move the next set of `bard` directories into
