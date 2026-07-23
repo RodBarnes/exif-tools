@@ -1,7 +1,9 @@
 #!/bin/bash
 # exif-photos.sh
 #
-# Audits or updates EXIF fields for photos in a YYYY/MM directory structure.
+# Audits or updates EXIF fields for photos. A YYYY/MM directory structure is
+# used when present (both for the date fallback and the description label)
+# but is not required — files anywhere under base_dir are processed.
 # Processes files missing DateTimeOriginal OR missing Description.
 #
 # Usage:
@@ -9,21 +11,32 @@
 #   exif-photos.sh update <base_dir> [logfile]
 #
 # Modes:
-#   report  -- List files missing DateTimeOriginal or Description; no changes made
+#   report  -- Preview what update would do; no changes made
 #   update  -- Set missing fields using rules below:
 #
 # DateTimeOriginal (and CreateDate) derived from, in order:
-#   1. Timestamp parsed from filename (YYYYMMDD_HHMMSS, YYYYMMDD, MMDDYYHHMMSS)
-#   2. YYYY/MM from directory path, defaulting to 01 00:00:00
+#   1. Existing EXIF value, if present — left untouched
+#   2. Timestamp parsed from filename (YYYYMMDD_HHMMSS, YYYYMMDD, MMDDYYHHMMSS)
+#   3. YYYY/MM from directory path (if present anywhere in the path), defaulting
+#      to 01 00:00:00
+#   4. Standalone 4-digit year in the filename (e.g. "Andrew 1989.jpg"),
+#      defaulting to 01/01 — lowest-confidence source, logged distinctly as
+#      "filename-year-only" so it can be spot-checked later
+#   If none of these yield a date, the file is left untouched and flagged
+#   NEEDS REVIEW — no date is ever fabricated.
 #
 # Description (ImageDescription + XMP-dc:Description) derived from:
-#   1. Descriptive subdirectory beneath YYYY/MM (if present)
+#   1. Descriptive immediate subdirectory (the first path component after
+#      YYYY/MM if that structure is present, otherwise the file's first
+#      path component relative to base_dir)
 #   2. Descriptive filename (if not a camera-generated name)
 #   3. Both combined as "SubDir - Filename" when both are present
+#   Only written for files that have (or received) a DateTimeOriginal — a
+#   file with no date source gets no description write either.
 #
 # Supported file types: jpg, jpeg, png, tif
 # Not processed: recognized videos (tallied separately, not a skip), other
-# non-media file types (skipped), directories outside YYYY/MM pattern (skipped)
+# non-media file types (skipped)
 
 set -euo pipefail
 
@@ -76,7 +89,7 @@ count_has_date=0
 count_missing=0
 count_updated_filename=0
 count_updated_dir=0
-count_skipped_structure=0
+count_needs_review=0
 count_skipped_type=0
 count_video=0
 count_errors=0
@@ -224,6 +237,36 @@ parse_date_from_dir() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: attempt to parse a standalone 4-digit year from filename
+# Lowest-confidence date source — only tried after filename and directory
+# parsing both fail. Matches a bounded year token (e.g. "Andrew 1989.jpg",
+# "1999-notes.jpg") but not one embedded in a longer digit run
+# (e.g. "DSC02021" has no 4-digit window with non-digit neighbors on both
+# sides). Rejects years in the future. Defaults month/day to 01/01 since
+# only the year is known.
+# Returns exiftool-format date string or empty
+# ---------------------------------------------------------------------------
+parse_year_only_from_filename() {
+    local filename="$1"
+    local base
+    base=$(basename "$filename")
+    base="${base%.*}"  # strip extension
+
+    local pat_year_only='(^|[^0-9])((19|20)[0-9]{2})([^0-9]|$)'
+    if [[ "$base" =~ $pat_year_only ]]; then
+        local y="${BASH_REMATCH[2]}"
+        local current_year
+        current_year=$(date +%Y)
+        if [[ "$y" -le "$current_year" ]]; then
+            echo "${y}:01:01 00:00:00"
+            return
+        fi
+    fi
+
+    echo ""
+}
+
+# ---------------------------------------------------------------------------
 # Helper: check that YYYY/MM components are plausible
 # ---------------------------------------------------------------------------
 is_valid_year_month() {
@@ -282,10 +325,15 @@ derive_description() {
     local base_dir="$2"
 
     local rel_path="${filepath#$base_dir/}"
-    # rel_path is now: YYYY/MM[/subdir[/subdir...]]/filename.ext
+    # rel_path is now: [YYYY/MM/]subdir[/subdir...]/filename.ext
 
-    # Strip YYYY/MM prefix
-    local after_ym="${rel_path#*/*/}"
+    # Strip YYYY/MM prefix only if actually present — otherwise the first
+    # path component itself is the descriptive label (e.g. a topic-named
+    # folder with no date structure at all).
+    local after_ym="$rel_path"
+    if [[ "$rel_path" =~ ^[0-9]{4}/[0-9]{2}/ ]]; then
+        after_ym="${rel_path#*/*/}"
+    fi
     # after_ym is now: [subdir[/subdir...]/]filename.ext
 
     # Separate the filename from any subdirectory path
@@ -337,13 +385,6 @@ while IFS= read -r -d '' file; do
     ext_lower="${ext,,}"
     rel_path="${file#$BASE_DIR/}"
 
-    # Check directory structure matches YYYY/MM
-    if ! [[ "$rel_path" =~ ^([0-9]{4})/([0-9]{2})/ ]]; then
-        log "SKIP [structure] $file"
-        (( count_skipped_structure++ )) || true
-        continue
-    fi
-
     # Recognized video types are valid Immich assets but have no EXIF fields
     # for this script to audit/write — tally separately, not as a skip.
     if is_video "$ext_lower"; then
@@ -374,25 +415,31 @@ while IFS= read -r -d '' file; do
         (( count_missing++ )) || true
         needs_date=true
 
-        if [[ "$MODE" == "report" ]]; then
-            log "MISSING [date] $file"
+        # Try filename first, fall back to directory (in both modes, so
+        # report previews exactly what update would do)
+        new_date=$(parse_date_from_filename "$file")
+        if [[ -n "$new_date" ]]; then
+            date_source="filename"
         else
-            # Try filename first, fall back to directory
-            new_date=$(parse_date_from_filename "$file")
+            new_date=$(parse_date_from_dir "$file")
             if [[ -n "$new_date" ]]; then
-                date_source="filename"
+                date_source="directory"
             else
-                new_date=$(parse_date_from_dir "$file")
+                new_date=$(parse_year_only_from_filename "$file")
                 if [[ -n "$new_date" ]]; then
-                    date_source="directory"
+                    date_source="filename-year-only"
                 fi
             fi
+        fi
 
-            if [[ -z "$new_date" ]]; then
-                log "ERROR [no date source] $file"
-                (( count_errors++ )) || true
-                continue
-            fi
+        if [[ -z "$new_date" ]]; then
+            log "NEEDS REVIEW [no date source] $file"
+            (( count_needs_review++ )) || true
+            continue
+        fi
+
+        if [[ "$MODE" == "report" ]]; then
+            log "MISSING [date:$date_source] $new_date  $file"
         fi
     fi
 
@@ -473,9 +520,10 @@ log ""
 log "========================================"
 log "Summary"
 log "========================================"
-log "Files processed (photo types in YYYY/MM) : $count_processed"
+log "Files processed (photo types)             : $count_processed"
 log "Already complete (date + desc present)   : $count_has_date"
 log "Missing DateTimeOriginal                 : $count_missing"
+log "  Needs review (no date source found)    : $count_needs_review"
 if [[ "$MODE" == "update" ]]; then
 log "  Updated from filename                  : $count_updated_filename"
 log "  Updated from directory                 : $count_updated_dir"
@@ -483,7 +531,6 @@ log "Description written                      : $count_desc_written"
 log "Errors                                   : $count_errors"
 fi
 log "Non-photo (video, not processed)         : $count_video"
-log "Skipped (outside YYYY/MM structure)      : $count_skipped_structure"
 log "Skipped (unsupported file type)          : $count_skipped_type"
 if (( count_skipped_type > 0 )); then
     for ext in $(printf '%s\n' "${!skipped_type_counts[@]}" | sort); do
