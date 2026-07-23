@@ -22,7 +22,8 @@
 #   3. Both combined as "SubDir - Filename" when both are present
 #
 # Supported file types: jpg, jpeg, png, tif
-# Skipped: videos, gif, non-media files, directories outside YYYY/MM pattern
+# Not processed: recognized videos (tallied separately, not a skip), other
+# non-media file types (skipped), directories outside YYYY/MM pattern (skipped)
 
 set -euo pipefail
 
@@ -54,6 +55,13 @@ fi
 PHOTO_EXTS="jpg jpeg png tif"
 
 # ---------------------------------------------------------------------------
+# Recognized video extensions (all lowercase)
+# Videos are valid Immich assets but have no EXIF fields for this script to
+# audit/write, so they're tallied separately, not as a skip.
+# ---------------------------------------------------------------------------
+VIDEO_EXTS="mp4 mov avi mkv wmv m4v 3gp 3g2 mpg"
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 log() {
@@ -70,9 +78,11 @@ count_updated_filename=0
 count_updated_dir=0
 count_skipped_structure=0
 count_skipped_type=0
+count_video=0
 count_errors=0
 count_desc_written=0
 count_desc_skipped=0
+declare -A skipped_type_counts=()
 
 # ---------------------------------------------------------------------------
 # Check exiftool is available
@@ -97,6 +107,17 @@ log ""
 is_photo() {
     local ext="${1,,}"  # lowercase
     for e in $PHOTO_EXTS; do
+        [[ "$ext" == "$e" ]] && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Helper: check if extension is a recognized video type
+# ---------------------------------------------------------------------------
+is_video() {
+    local ext="${1,,}"
+    for e in $VIDEO_EXTS; do
         [[ "$ext" == "$e" ]] && return 0
     done
     return 1
@@ -313,6 +334,7 @@ derive_description() {
 while IFS= read -r -d '' file; do
 
     ext="${file##*.}"
+    ext_lower="${ext,,}"
     rel_path="${file#$BASE_DIR/}"
 
     # Check directory structure matches YYYY/MM
@@ -322,9 +344,18 @@ while IFS= read -r -d '' file; do
         continue
     fi
 
+    # Recognized video types are valid Immich assets but have no EXIF fields
+    # for this script to audit/write — tally separately, not as a skip.
+    if is_video "$ext_lower"; then
+        log "NON-PHOTO [video:$ext_lower] $file"
+        (( count_video++ )) || true
+        continue
+    fi
+
     # Check file type
-    if ! is_photo "$ext"; then
-        log "SKIP [type:$ext] $file"
+    if ! is_photo "$ext_lower"; then
+        log "SKIP [type:$ext_lower] $file"
+        (( skipped_type_counts[$ext_lower]++ )) || true
         (( count_skipped_type++ )) || true
         continue
     fi
@@ -451,7 +482,13 @@ log "  Updated from directory                 : $count_updated_dir"
 log "Description written                      : $count_desc_written"
 log "Errors                                   : $count_errors"
 fi
+log "Non-photo (video, not processed)         : $count_video"
 log "Skipped (outside YYYY/MM structure)      : $count_skipped_structure"
 log "Skipped (unsupported file type)          : $count_skipped_type"
+if (( count_skipped_type > 0 )); then
+    for ext in $(printf '%s\n' "${!skipped_type_counts[@]}" | sort); do
+        log "  .$ext : ${skipped_type_counts[$ext]}"
+    done
+fi
 log "Completed : $(date)"
 log "========================================"

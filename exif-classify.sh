@@ -37,6 +37,13 @@ fi
 PHOTO_EXTS="jpg jpeg png tif"
 
 # ---------------------------------------------------------------------------
+# Recognized video extensions (all lowercase)
+# Videos are valid Immich assets but this script only classifies photo
+# filenames for EXIF purposes, so they're tallied separately, not as a skip.
+# ---------------------------------------------------------------------------
+VIDEO_EXTS="mp4 mov avi mkv wmv m4v 3gp 3g2 mpg"
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 log() {
@@ -52,6 +59,9 @@ count_camera_serial=0
 count_descriptive=0
 count_skipped_structure=0
 count_skipped_type=0
+count_video=0
+declare -A skipped_type_counts=()
+declare -A structure_skip_counts=()
 
 # ---------------------------------------------------------------------------
 # Helper: check if extension is a supported photo type
@@ -62,6 +72,52 @@ is_photo() {
         [[ "$ext" == "$e" ]] && return 0
     done
     return 1
+}
+
+# ---------------------------------------------------------------------------
+# Helper: check if extension is a recognized video type
+# ---------------------------------------------------------------------------
+is_video() {
+    local ext="${1,,}"
+    for e in $VIDEO_EXTS; do
+        [[ "$ext" == "$e" ]] && return 0
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Helper: bucket a structure-skipped path into a grouping label, so 16,950+
+# skips can be summarized instead of listed one file at a time.
+# ---------------------------------------------------------------------------
+classify_structure_skip() {
+    local rel_path="$1"
+    local comp1 comp2 rest
+
+    if [[ "$rel_path" != */* ]]; then
+        echo "no year/month subdir (flat file)"
+        return
+    fi
+
+    comp1="${rel_path%%/*}"
+    rest="${rel_path#*/}"
+
+    if ! [[ "$comp1" =~ ^[0-9]{4}$ ]]; then
+        echo "top-level: $comp1/"
+        return
+    fi
+
+    if [[ "$rest" != */* ]]; then
+        echo "$comp1/ (no MM subdir)"
+        return
+    fi
+
+    comp2="${rest%%/*}"
+    if ! [[ "$comp2" =~ ^[0-9]{2}$ ]]; then
+        echo "$comp1/ (invalid MM: $comp2)"
+        return
+    fi
+
+    echo "unclassified structure skip"
 }
 
 # ---------------------------------------------------------------------------
@@ -197,16 +253,29 @@ log ""
 while IFS= read -r -d '' file; do
 
     ext="${file##*.}"
+    ext_lower="${ext,,}"
     rel_path="${file#$BASE_DIR/}"
 
     # Must be in YYYY/MM structure
     if ! [[ "$rel_path" =~ ^([0-9]{4})/([0-9]{2})/ ]]; then
+        bucket=$(classify_structure_skip "$rel_path")
+        (( structure_skip_counts["$bucket"]++ )) || true
         (( count_skipped_structure++ )) || true
         continue
     fi
 
+    # Recognized video types are valid Immich assets but outside this
+    # script's scope (photo filename classification) — tally separately.
+    if is_video "$ext_lower"; then
+        log "NON-PHOTO [video:$ext_lower]  $file"
+        (( count_video++ )) || true
+        continue
+    fi
+
     # Must be a supported photo type
-    if ! is_photo "$ext"; then
+    if ! is_photo "$ext_lower"; then
+        log "SKIP [type:$ext_lower]  $file"
+        (( skipped_type_counts[$ext_lower]++ )) || true
         (( count_skipped_type++ )) || true
         continue
     fi
@@ -238,7 +307,18 @@ log "Date-like filenames    : $count_date_like"
 log "Camera-prefix filenames: $count_camera_prefix"
 log "Camera-serial filenames: $count_camera_serial"
 log "Descriptive filenames  : $count_descriptive"
+log "Non-photo (video)      : $count_video"
 log "Skipped (structure)    : $count_skipped_structure"
+if (( count_skipped_structure > 0 )); then
+    while IFS='|' read -r bucket cnt; do
+        log "  $bucket : $cnt"
+    done < <(for k in "${!structure_skip_counts[@]}"; do printf '%s|%s\n' "$k" "${structure_skip_counts[$k]}"; done | sort -t'|' -k2 -rn)
+fi
 log "Skipped (type)         : $count_skipped_type"
+if (( count_skipped_type > 0 )); then
+    for ext in $(printf '%s\n' "${!skipped_type_counts[@]}" | sort); do
+        log "  .$ext : ${skipped_type_counts[$ext]}"
+    done
+fi
 log "Completed : $(date)"
 log "========================================"
